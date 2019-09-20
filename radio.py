@@ -8,6 +8,7 @@ import urllib.parse
 import collections
 import traceback
 import datetime
+import threading
 
 import click
 import requests
@@ -24,6 +25,7 @@ class Radio:
         self.no_repeat_percent = 0.5
         self.intro_chance = 0.5
         self.random_lasts = collections.defaultdict(lambda: collections.deque())
+        self.current = None
 
         self.reload()
 
@@ -39,9 +41,8 @@ class Radio:
                 traceback.print_exc(file=sys.stderr)
 
     def set_metadata(self, meta):
-        parts = [self.defs.get('name'), meta.get('artist'), meta.get('title')]
-        parts = [p for p in parts if p is not None]
-        song = ' - '.join(parts)
+        self.current = sprunk.Metadata(meta.get('title'), meta.get('artist'), self.defs.get('name'))
+        song = self.current.str()
         if not song:
             song = 'NO INFORMATION'
 
@@ -209,10 +210,14 @@ class Radio:
                 soft_time = yield from self.go_solo(sched, soft_time)
                 yield self.padding
 
-def run(src, sink, buffer_size=0.5):
+def run(src, sink, radio, buffer_size=0.5):
     src = src.reformat_like(sink)
     src.allocate(int(src.samplerate * buffer_size))
     filled = src.buffer
+    if radio is not None:
+        web = sprunk.Web(radio)
+        thread = threading.Thread(target=web.web_thread, daemon=True)
+        thread.start()
     while len(filled) > 0:
         filled = src.fill()
         sink.write(filled)
@@ -263,7 +268,7 @@ def cli():
 @click.option('-s', '--buffer-size', default=0.5, type=float)
 @input_argument('SRC')
 def play(output, src, buffer_size):
-    run(src, output, buffer_size=buffer_size)
+    run(src, output, None, buffer_size=buffer_size)
 
 @sprunk.coroutine
 def over_coroutine(sched, song, over):
@@ -288,7 +293,7 @@ def over_coroutine(sched, song, over):
 def over(output, song, over, buffer_size):
     sched = sprunk.Scheduler(output.samplerate, output.channels)
     over_coroutine(sched, song, over)
-    run(sched, output, buffer_size=buffer_size)
+    run(sched, output, None, buffer_size=buffer_size)
 
 @cli.command()
 @click.argument('DEFINITIONS', nargs=-1)
@@ -307,7 +312,7 @@ def radio(output, definitions, extension, meta_url, buffer_size):
     r = Radio(definitions, extension, meta_url)
     sched = sprunk.Scheduler(output.samplerate, output.channels)
     r.go(sched)
-    run(sched, output, buffer_size)
+    run(sched, output, r, buffer_size)
 
 if __name__ == '__main__':
     cli()
